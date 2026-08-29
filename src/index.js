@@ -18,6 +18,7 @@ import {
   handleRenameModal,
   IDS,
   panelPayload,
+  rebuildOwnership,
   restoreRoleOnJoin,
 } from "./roles.js";
 
@@ -86,6 +87,12 @@ client.once(Events.ClientReady, async (readyClient) => {
     await registerCommands();
   } catch (error) {
     console.error("Не удалось зарегистрировать команды:", error);
+  }
+  try {
+    await rebuildOwnership(readyClient);
+    console.log("Привязки персональных ролей восстановлены");
+  } catch (error) {
+    console.error("Не удалось восстановить привязки ролей:", error);
   }
 });
 

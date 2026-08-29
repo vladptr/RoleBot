@@ -1,4 +1,5 @@
 import {
+  AuditLogEvent,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
@@ -13,6 +14,7 @@ import {
 } from "discord.js";
 import { COLORS, colorName, findColor } from "./colors.js";
 import { ROLE_EMOJIS, findRoleEmoji } from "./emojis.js";
+import { applyOwnerMark, decodeOwner, visibleName } from "./ownerMark.js";
 import * as store from "./store.js";
 
 export const IDS = {
@@ -75,7 +77,7 @@ function isEmojiToken(token) {
 }
 
 function parseRoleName(fullName) {
-  const tokens = String(fullName ?? "").trim().split(/\s+/).filter(Boolean);
+  const tokens = visibleName(fullName).trim().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return { left: "", name: "", right: "" };
 
   let start = 0;
@@ -119,16 +121,119 @@ function editErrorMessage(error, what) {
   return `Не удалось изменить ${what}. Попробуй ещё раз.`;
 }
 
-async function fetchOwnedRole(guild, userId) {
-  const roleId = store.getRoleId(guild.id, userId);
-  if (!roleId) return null;
-  const role =
-    guild.roles.cache.get(roleId) ?? (await guild.roles.fetch(roleId).catch(() => null));
-  if (!role) {
-    store.deleteRoleId(guild.id, userId);
-    return null;
+async function setOwnedName(role, name, userId, reason) {
+  const marked = applyOwnerMark(name, userId);
+  try {
+    return await role.setName(marked, reason);
+  } catch (error) {
+    if (marked !== name) {
+      return role.setName(visibleName(name).slice(0, NAME_MAX), reason);
+    }
+    throw error;
   }
-  return role;
+}
+
+function isPersonalCandidate(role) {
+  if (!role || role.managed) return false;
+  if (role.id === role.guild.id) return false;
+  if (!role.editable) return false;
+  return role.permissions.bitfield === 0n;
+}
+
+async function recoverPersonalRole(member) {
+  await member.guild.roles.fetch().catch(() => null);
+
+  for (const role of member.guild.roles.cache.values()) {
+    if (decodeOwner(role.name) === member.id) {
+      return role;
+    }
+  }
+
+  await member.guild.members.fetch().catch(() => null);
+
+  const unique = [];
+  for (const role of member.roles.cache.values()) {
+    if (!isPersonalCandidate(role)) continue;
+    if (decodeOwner(role.name) && decodeOwner(role.name) !== member.id) continue;
+    if (role.members.size === 1 && role.members.has(member.id)) {
+      unique.push(role);
+    }
+  }
+
+  if (unique.length > 0) {
+    unique.sort((a, b) => (BigInt(b.id) > BigInt(a.id) ? 1 : -1));
+    return unique[0];
+  }
+
+  const local = [...member.roles.cache.values()].filter(isPersonalCandidate);
+  if (local.length === 1) return local[0];
+  return null;
+}
+
+async function fetchOwnedRole(guild, userId, member = null) {
+  const storedId = store.getRoleId(guild.id, userId);
+  if (storedId) {
+    const role =
+      guild.roles.cache.get(storedId) ?? (await guild.roles.fetch(storedId).catch(() => null));
+    if (role) return role;
+    store.deleteRoleId(guild.id, userId);
+  }
+
+  const mem = member ?? guild.members.cache.get(userId) ?? (await guild.members.fetch(userId).catch(() => null));
+  if (!mem) return null;
+
+  const recovered = await recoverPersonalRole(mem);
+  if (!recovered) return null;
+
+  store.setRoleId(guild.id, userId, recovered.id);
+  if (!decodeOwner(recovered.name)) {
+    await setOwnedName(recovered, visibleName(recovered.name), userId, "Пометка персональной роли").catch(
+      () => null,
+    );
+  }
+  return recovered;
+}
+
+export async function rebuildOwnership(client) {
+  for (const guild of client.guilds.cache.values()) {
+    try {
+      await guild.roles.fetch();
+      await guild.members.fetch().catch(() => null);
+
+      for (const role of guild.roles.cache.values()) {
+        const ownerId = decodeOwner(role.name);
+        if (ownerId) store.setRoleId(guild.id, ownerId, role.id);
+      }
+
+      const newestFirst = [...guild.roles.cache.values()].sort((a, b) =>
+        BigInt(b.id) > BigInt(a.id) ? 1 : -1,
+      );
+
+      for (const role of newestFirst) {
+        if (!isPersonalCandidate(role) || role.members.size !== 1) continue;
+        const ownerId = role.members.first()?.id;
+        if (!ownerId || store.getRoleId(guild.id, ownerId)) continue;
+        store.setRoleId(guild.id, ownerId, role.id);
+      }
+
+      const logs = await guild
+        .fetchAuditLogs({ type: AuditLogEvent.RoleCreate, limit: 100 })
+        .catch(() => null);
+      if (!logs) continue;
+
+      for (const entry of logs.entries.values()) {
+        if ((entry.executorId ?? entry.executor?.id) !== client.user.id) continue;
+        const matched = /\((\d{17,20})\)\s*$/.exec(entry.reason ?? "");
+        const roleId = entry.targetId ?? entry.target?.id;
+        if (!matched || !roleId || !guild.roles.cache.has(roleId)) continue;
+        if (!store.getRoleId(guild.id, matched[1])) {
+          store.setRoleId(guild.id, matched[1], roleId);
+        }
+      }
+    } catch (error) {
+      console.error(`Failed to rebuild role ownership for ${guild.id}:`, error);
+    }
+  }
 }
 
 function roleColor(role) {
@@ -235,7 +340,7 @@ function manageEmbed(role) {
     .setTitle("Управление ролью")
     .setDescription(
       [
-        `Название: **${role.name}**`,
+        `Название: **${visibleName(role.name)}**`,
         `Цвет: **${colorName(hex)}**`,
         "",
         "Эти кнопки видишь только ты. Название, эмодзи по краям и цвет выбираются здесь.",
@@ -262,14 +367,26 @@ async function createPersonalRole(member) {
   const name = sanitizeName(member.displayName) || "Роль";
 
   try {
-    const role = await guild.roles.create({
-      name,
-      colors: { primaryColor: 0x3498db },
-      permissions: [],
-      mentionable: false,
-      hoist: false,
-      reason: `Персональная роль для ${member.user.tag} (${member.id})`,
-    });
+    let role;
+    try {
+      role = await guild.roles.create({
+        name: applyOwnerMark(name, member.id),
+        colors: { primaryColor: 0x3498db },
+        permissions: [],
+        mentionable: false,
+        hoist: false,
+        reason: `Персональная роль для ${member.user.tag} (${member.id})`,
+      });
+    } catch {
+      role = await guild.roles.create({
+        name,
+        colors: { primaryColor: 0x3498db },
+        permissions: [],
+        mentionable: false,
+        hoist: false,
+        reason: `Персональная роль для ${member.user.tag} (${member.id})`,
+      });
+    }
 
     await member.roles.add(role, "Выдача персональной роли");
     store.setRoleId(guild.id, member.id, role.id);
@@ -288,7 +405,7 @@ export async function handlePanelClick(interaction) {
 
   const member = interaction.member;
   const guild = interaction.guild;
-  const role = await fetchOwnedRole(guild, member.id);
+  const role = await fetchOwnedRole(guild, member.id, member);
 
   if (!role) {
     const created = await createPersonalRole(member);
@@ -298,7 +415,7 @@ export async function handlePanelClick(interaction) {
     }
 
     await interaction.editReply({
-      content: `Роль **${created.role.name}** создана и выдана тебе.`,
+      content: `Роль **${visibleName(created.role.name)}** создана и выдана тебе.`,
       ...managePayload(created.role),
     });
     return;
@@ -318,7 +435,7 @@ export async function handlePanelClick(interaction) {
 }
 
 export async function handleRenameButton(interaction) {
-  const role = await fetchOwnedRole(interaction.guild, interaction.user.id);
+  const role = await fetchOwnedRole(interaction.guild, interaction.user.id, interaction.member);
   if (!role) {
     await interaction.reply(
       ephemeral({
@@ -329,7 +446,7 @@ export async function handleRenameButton(interaction) {
   }
 
   const parsed = parseRoleName(role.name);
-  const nameValue = (parsed.name || role.name || "Роль").slice(0, NAME_MAX) || "Роль";
+  const nameValue = (parsed.name || visibleName(role.name) || "Роль").slice(0, NAME_MAX) || "Роль";
 
   const modal = new ModalBuilder().setCustomId(IDS.RENAME_MODAL).setTitle("Название роли");
 
@@ -350,7 +467,7 @@ export async function handleRenameButton(interaction) {
 export async function handleRenameModal(interaction) {
   await interaction.deferReply(ephemeral({}));
 
-  const role = await fetchOwnedRole(interaction.guild, interaction.user.id);
+  const role = await fetchOwnedRole(interaction.guild, interaction.user.id, interaction.member);
   if (!role) {
     await interaction.editReply({
       content: "У тебя ещё нет персональной роли. Нажми **Моя роль** на панели.",
@@ -378,8 +495,10 @@ export async function handleRenameModal(interaction) {
   }
 
   try {
-    const updated = await role.setName(
+    const updated = await setOwnedName(
+      role,
       fullName,
+      interaction.user.id,
       `Смена названия персональной роли ${interaction.user.tag}`,
     );
     await interaction.editReply({
@@ -397,7 +516,7 @@ export async function handleRenameModal(interaction) {
 export async function handleEmojiSelect(interaction) {
   await interaction.deferUpdate();
 
-  const role = await fetchOwnedRole(interaction.guild, interaction.user.id);
+  const role = await fetchOwnedRole(interaction.guild, interaction.user.id, interaction.member);
   if (!role) {
     await interaction.editReply({
       content: "У тебя ещё нет персональной роли. Нажми **Моя роль** на панели.",
@@ -414,7 +533,7 @@ export async function handleEmojiSelect(interaction) {
   }
 
   const parsed = parseRoleName(role.name);
-  const name = parsed.name || role.name || "Роль";
+  const name = parsed.name || visibleName(role.name) || "Роль";
   const selected = interaction.values[0];
   const emoji =
     selected === "none"
@@ -429,8 +548,10 @@ export async function handleEmojiSelect(interaction) {
       : buildRoleName(parsed.left, name, emoji);
 
   try {
-    const updated = await role.setName(
+    const updated = await setOwnedName(
+      role,
       fullName,
+      interaction.user.id,
       `Смена эмодзи персональной роли ${interaction.user.tag}`,
     );
     await interaction.editReply(managePayload(updated));
@@ -447,7 +568,7 @@ export async function handleEmojiSelect(interaction) {
 export async function handleColorSelect(interaction) {
   await interaction.deferUpdate();
 
-  const role = await fetchOwnedRole(interaction.guild, interaction.user.id);
+  const role = await fetchOwnedRole(interaction.guild, interaction.user.id, interaction.member);
   if (!role) {
     await interaction.editReply({
       content: "У тебя ещё нет персональной роли. Нажми **Моя роль** на панели.",
@@ -487,7 +608,7 @@ export async function handleColorSelect(interaction) {
 }
 
 export async function restoreRoleOnJoin(member) {
-  const role = await fetchOwnedRole(member.guild, member.id);
+  const role = await fetchOwnedRole(member.guild, member.id, member);
   if (!role) return;
   if (member.roles.cache.has(role.id)) return;
   await member.roles.add(role, "Возврат персональной роли после входа").catch(() => null);
