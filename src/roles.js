@@ -12,6 +12,7 @@ import {
   TextInputStyle,
 } from "discord.js";
 import { COLORS, colorName, findColor } from "./colors.js";
+import { ROLE_EMOJIS, findRoleEmoji } from "./emojis.js";
 import * as store from "./store.js";
 
 export const IDS = {
@@ -25,7 +26,6 @@ export const IDS = {
 };
 
 const NAME_MAX = 100;
-const EMOJI_MAX = 16;
 const EMOJI_CHARS =
   /\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Emoji_Modifier}|\p{Emoji_Modifier_Base}|\p{Emoji_Component}|\p{Regional_Indicator}|\uFE0F|\u200D|\u20E3/gu;
 
@@ -72,32 +72,6 @@ function isEmojiToken(token) {
     /[\u{1F1E6}-\u{1F1FF}]{2}/u.test(token) ||
     token.includes("\u20E3")
   );
-}
-
-function sanitizeEmoji(raw) {
-  let value = String(raw ?? "").trim();
-  if (!value) return { value: "" };
-
-  if (value.startsWith("(") && value.endsWith(")") && value.length > 2) {
-    value = value.slice(1, -1).trim();
-  }
-
-  value = value.replace(/\s+/g, "");
-  if (!value) return { value: "" };
-
-  if (value.length > EMOJI_MAX) {
-    return { error: "Эмодзи слишком длинное. Вставь один эмодзи, например 🥇." };
-  }
-
-  if (/@everyone|@here|https?:\/\//i.test(value)) {
-    return { error: "В поле эмодзи нельзя вставлять ссылки или упоминания." };
-  }
-
-  if (!isEmojiToken(value)) {
-    return { error: "В поля по краям вставь только эмодзи, например 🥇. Обычный текст туда нельзя." };
-  }
-
-  return { value };
 }
 
 function parseRoleName(fullName) {
@@ -186,13 +160,46 @@ function botCanManage(guild, role) {
   return null;
 }
 
+function emojiSelectRow(customId, placeholder, current) {
+  const options = [
+    new StringSelectMenuOptionBuilder()
+      .setLabel("Без эмодзи")
+      .setValue("none")
+      .setEmoji("🚫")
+      .setDefault(!current),
+  ];
+
+  const list = [...ROLE_EMOJIS];
+  if (current && !list.some((item) => item.emoji === current)) {
+    list.unshift({ id: `raw:${current}`, emoji: current, label: "Текущий" });
+  }
+
+  for (const item of list.slice(0, 24)) {
+    options.push(
+      new StringSelectMenuOptionBuilder()
+        .setLabel(item.label)
+        .setValue(item.id)
+        .setEmoji(item.emoji)
+        .setDefault(item.emoji === current),
+    );
+  }
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(customId)
+      .setPlaceholder(placeholder)
+      .addOptions(options),
+  );
+}
+
 function manageComponents(role) {
+  const parsed = parseRoleName(role.name);
   const current = findColor(roleColor(role));
 
   const renameRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(IDS.RENAME)
-      .setLabel("Название и эмодзи")
+      .setLabel("Изменить название")
       .setStyle(ButtonStyle.Secondary)
       .setEmoji("✏️"),
   );
@@ -213,7 +220,12 @@ function manageComponents(role) {
       ),
   );
 
-  return [renameRow, colorRow];
+  return [
+    renameRow,
+    emojiSelectRow(IDS.EMOJI_LEFT, "Эмодзи слева", parsed.left),
+    emojiSelectRow(IDS.EMOJI_RIGHT, "Эмодзи справа", parsed.right),
+    colorRow,
+  ];
 }
 
 function manageEmbed(role) {
@@ -226,7 +238,7 @@ function manageEmbed(role) {
         `Название: **${role.name}**`,
         `Цвет: **${colorName(hex)}**`,
         "",
-        "Эти кнопки видишь только ты. Можно изменить название, эмодзи по краям и цвет.",
+        "Эти кнопки видишь только ты. Название, эмодзи по краям и цвет выбираются здесь.",
       ].join("\n"),
     );
 }
@@ -317,21 +329,9 @@ export async function handleRenameButton(interaction) {
   }
 
   const parsed = parseRoleName(role.name);
-  const nameValue = (parsed.name || role.name).slice(0, NAME_MAX);
+  const nameValue = (parsed.name || role.name || "Роль").slice(0, NAME_MAX) || "Роль";
 
-  const modal = new ModalBuilder()
-    .setCustomId(IDS.RENAME_MODAL)
-    .setTitle("Название и эмодзи");
-
-  const leftInput = new TextInputBuilder()
-    .setCustomId(IDS.EMOJI_LEFT)
-    .setLabel("Эмодзи слева")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false)
-    .setMaxLength(EMOJI_MAX)
-    .setPlaceholder("🥇  или оставь пустым");
-
-  if (parsed.left) leftInput.setValue(parsed.left);
+  const modal = new ModalBuilder().setCustomId(IDS.RENAME_MODAL).setTitle("Название роли");
 
   const nameInput = new TextInputBuilder()
     .setCustomId(IDS.NAME_INPUT)
@@ -343,21 +343,7 @@ export async function handleRenameButton(interaction) {
     .setValue(nameValue)
     .setPlaceholder("Как будет называться роль");
 
-  const rightInput = new TextInputBuilder()
-    .setCustomId(IDS.EMOJI_RIGHT)
-    .setLabel("Эмодзи справа")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(false)
-    .setMaxLength(EMOJI_MAX)
-    .setPlaceholder("🥇  или оставь пустым");
-
-  if (parsed.right) rightInput.setValue(parsed.right);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(leftInput),
-    new ActionRowBuilder().addComponents(nameInput),
-    new ActionRowBuilder().addComponents(rightInput),
-  );
+  modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
   await interaction.showModal(modal);
 }
 
@@ -378,25 +364,14 @@ export async function handleRenameModal(interaction) {
     return;
   }
 
+  const parsed = parseRoleName(role.name);
   const name = sanitizeName(interaction.fields.getTextInputValue(IDS.NAME_INPUT));
   if (!name) {
     await interaction.editReply({ content: "Название не может быть пустым." });
     return;
   }
 
-  const left = sanitizeEmoji(interaction.fields.getTextInputValue(IDS.EMOJI_LEFT));
-  if (left.error) {
-    await interaction.editReply({ content: left.error });
-    return;
-  }
-
-  const right = sanitizeEmoji(interaction.fields.getTextInputValue(IDS.EMOJI_RIGHT));
-  if (right.error) {
-    await interaction.editReply({ content: right.error });
-    return;
-  }
-
-  const fullName = buildRoleName(left.value, name, right.value);
+  const fullName = buildRoleName(parsed.left, name, parsed.right);
   if (!fullName) {
     await interaction.editReply({ content: "Название не может быть пустым." });
     return;
@@ -416,6 +391,56 @@ export async function handleRenameModal(interaction) {
     await interaction.editReply({
       content: editErrorMessage(error, "название"),
     });
+  }
+}
+
+export async function handleEmojiSelect(interaction) {
+  await interaction.deferUpdate();
+
+  const role = await fetchOwnedRole(interaction.guild, interaction.user.id);
+  if (!role) {
+    await interaction.editReply({
+      content: "У тебя ещё нет персональной роли. Нажми **Моя роль** на панели.",
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  const permissionError = botCanManage(interaction.guild, role);
+  if (permissionError) {
+    await interaction.followUp(ephemeral({ content: permissionError }));
+    return;
+  }
+
+  const parsed = parseRoleName(role.name);
+  const name = parsed.name || role.name || "Роль";
+  const selected = interaction.values[0];
+  const emoji =
+    selected === "none"
+      ? ""
+      : selected.startsWith("raw:")
+        ? selected.slice(4)
+        : findRoleEmoji(selected)?.emoji || "";
+
+  const fullName =
+    interaction.customId === IDS.EMOJI_LEFT
+      ? buildRoleName(emoji, name, parsed.right)
+      : buildRoleName(parsed.left, name, emoji);
+
+  try {
+    const updated = await role.setName(
+      fullName,
+      `Смена эмодзи персональной роли ${interaction.user.tag}`,
+    );
+    await interaction.editReply(managePayload(updated));
+  } catch (error) {
+    console.error("Failed to set role emoji:", error);
+    await interaction.followUp(
+      ephemeral({
+        content: editErrorMessage(error, "эмодзи"),
+      }),
+    );
   }
 }
 

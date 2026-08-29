@@ -12,6 +12,7 @@ import { keepAlive } from "./keepAlive.js";
 import * as store from "./store.js";
 import {
   handleColorSelect,
+  handleEmojiSelect,
   handlePanelClick,
   handleRenameButton,
   handleRenameModal,
@@ -123,6 +124,14 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isStringSelectMenu() && interaction.customId === IDS.COLOR) {
       await handleColorSelect(interaction);
+      return;
+    }
+
+    if (
+      interaction.isStringSelectMenu() &&
+      (interaction.customId === IDS.EMOJI_LEFT || interaction.customId === IDS.EMOJI_RIGHT)
+    ) {
+      await handleEmojiSelect(interaction);
     }
   } catch (error) {
     console.error("Interaction error:", error);
