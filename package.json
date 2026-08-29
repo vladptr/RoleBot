@@ -1,0 +1,19 @@
+{
+  "name": "rolebot",
+  "version": "1.0.0",
+  "description": "Discord-бот персональных ролей: создание по кнопке, изменение названия и цвета",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "keywords": ["discord", "bot", "roles"],
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.22.1",
+    "dotenv": "^16.6.1"
+  }
+}
