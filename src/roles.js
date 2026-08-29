@@ -63,6 +63,17 @@ function ephemeral(payload) {
   return { ...payload, flags: MessageFlags.Ephemeral };
 }
 
+function editErrorMessage(error, what) {
+  const code = error?.code;
+  if (code === 50013) {
+    return `Не удалось изменить ${what}: нет права **Управлять ролями**, или роль бота стоит не выше персональной.`;
+  }
+  if (code === 50035) {
+    return `Не удалось изменить ${what}: Discord отклонил значение. Попробуй другой цвет или название.`;
+  }
+  return `Не удалось изменить ${what}. Проверь право **Управлять ролями** у роли бота.`;
+}
+
 async function fetchOwnedRole(guild, userId) {
   const roleId = store.getRoleId(guild.id, userId);
   if (!roleId) return null;
@@ -75,10 +86,17 @@ async function fetchOwnedRole(guild, userId) {
   return role;
 }
 
+function roleColor(role) {
+  return role.colors?.primaryColor ?? role.color ?? 0;
+}
+
 function botCanManage(guild, role) {
   const me = guild.members.me;
   if (!me?.permissions.has(PermissionFlagsBits.ManageRoles)) {
-    return "У бота нет права **Управлять ролями**.";
+    return "У бота нет права **Управлять ролями**. Включи его у роли бота в настройках сервера.";
+  }
+  if (role && !role.editable) {
+    return "Бот не может изменить эту роль. Его роль должна стоять выше персональной, и у неё должно быть право **Управлять ролями**.";
   }
   if (role && role.position >= me.roles.highest.position) {
     return "Роль бота должна быть **выше** персональной роли в списке ролей сервера.";
@@ -87,7 +105,7 @@ function botCanManage(guild, role) {
 }
 
 function manageComponents(role) {
-  const current = findColor(role.color);
+  const current = findColor(roleColor(role));
 
   const renameRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -117,13 +135,14 @@ function manageComponents(role) {
 }
 
 function manageEmbed(role) {
+  const hex = roleColor(role);
   return new EmbedBuilder()
-    .setColor(role.color || 0x99aab5)
+    .setColor(hex || 0x99aab5)
     .setTitle("Управление ролью")
     .setDescription(
       [
         `Название: **${role.name}**`,
-        `Цвет: **${colorName(role.color)}**`,
+        `Цвет: **${colorName(hex)}**`,
         "",
         "Эти кнопки видишь только ты. Можно изменить только название и цвет.",
       ].join("\n"),
@@ -151,7 +170,7 @@ async function createPersonalRole(member) {
   try {
     const role = await guild.roles.create({
       name,
-      color: 0x3498db,
+      colors: { primaryColor: 0x3498db },
       permissions: [],
       mentionable: false,
       hoist: false,
@@ -268,7 +287,7 @@ export async function handleRenameModal(interaction) {
   } catch (error) {
     console.error("Failed to rename role:", error);
     await interaction.editReply({
-      content: "Не удалось изменить название. Возможно, роль бота стоит слишком низко.",
+      content: editErrorMessage(error, "название"),
     });
   }
 }
@@ -299,14 +318,17 @@ export async function handleColorSelect(interaction) {
   }
 
   try {
-    await role.setColor(selected.hex, `Смена цвета персональной роли ${interaction.user.tag}`);
+    await role.setColors(
+      { primaryColor: selected.hex },
+      `Смена цвета персональной роли ${interaction.user.tag}`,
+    );
     const updated = await role.fetch();
     await interaction.editReply(managePayload(updated));
   } catch (error) {
     console.error("Failed to recolor role:", error);
     await interaction.followUp(
       ephemeral({
-        content: "Не удалось изменить цвет. Возможно, роль бота стоит слишком низко.",
+        content: editErrorMessage(error, "цвет"),
       }),
     );
   }
