@@ -71,7 +71,7 @@ function editErrorMessage(error, what) {
   if (code === 50035) {
     return `Не удалось изменить ${what}: Discord отклонил значение. Попробуй другой цвет или название.`;
   }
-  return `Не удалось изменить ${what}. Проверь право **Управлять ролями** у роли бота.`;
+  return `Не удалось изменить ${what}. Попробуй ещё раз.`;
 }
 
 async function fetchOwnedRole(guild, userId) {
@@ -90,15 +90,26 @@ function roleColor(role) {
   return role.colors?.primaryColor ?? role.color ?? 0;
 }
 
+async function applyRoleColor(role, hex, reason) {
+  if (typeof role.setColors === "function") {
+    try {
+      return await role.setColors(
+        { primaryColor: hex, secondaryColor: null, tertiaryColor: null },
+        reason,
+      );
+    } catch {
+      return role.setColors({ primaryColor: hex }, reason);
+    }
+  }
+  return role.setColor(hex, reason);
+}
+
 function botCanManage(guild, role) {
   const me = guild.members.me;
   if (!me?.permissions.has(PermissionFlagsBits.ManageRoles)) {
     return "У бота нет права **Управлять ролями**. Включи его у роли бота в настройках сервера.";
   }
   if (role && !role.editable) {
-    return "Бот не может изменить эту роль. Его роль должна стоять выше персональной, и у неё должно быть право **Управлять ролями**.";
-  }
-  if (role && role.position >= me.roles.highest.position) {
     return "Роль бота должна быть **выше** персональной роли в списке ролей сервера.";
   }
   return null;
@@ -204,10 +215,8 @@ export async function handlePanelClick(interaction) {
     }
 
     await interaction.editReply({
-      content: [
-        `Роль **${created.role.name}** создана и выдана тебе.`,
-        "Нажми кнопку ещё раз, чтобы изменить название или цвет.",
-      ].join("\n"),
+      content: `Роль **${created.role.name}** создана и выдана тебе.`,
+      ...managePayload(created.role),
     });
     return;
   }
@@ -318,8 +327,9 @@ export async function handleColorSelect(interaction) {
   }
 
   try {
-    await role.setColors(
-      { primaryColor: selected.hex },
+    await applyRoleColor(
+      role,
+      selected.hex,
       `Смена цвета персональной роли ${interaction.user.tag}`,
     );
     const updated = await role.fetch();
