@@ -12,7 +12,5 @@ services:
         sync: false
       - key: CLIENT_ID
         sync: false
-      - key: GUILD_ID
-        sync: false
       - key: DATA_DIR
         value: ./data

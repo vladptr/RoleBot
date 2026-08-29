@@ -24,7 +24,6 @@ import {
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
-const guildId = process.env.GUILD_ID || null;
 
 if (!token || !clientId) {
   console.error("Нужны переменные окружения DISCORD_TOKEN и CLIENT_ID.");
@@ -42,19 +41,18 @@ const setupCommand = new SlashCommandBuilder()
   .setDMPermission(false)
   .toJSON();
 
-async function registerCommands() {
+async function registerGuildCommands(guildId) {
   const rest = new REST({ version: "10" }).setToken(token);
+  await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
+    body: [setupCommand],
+  });
+}
 
-  if (guildId) {
-    await rest.put(Routes.applicationGuildCommands(clientId, guildId), {
-      body: [setupCommand],
-    });
-    console.log(`Команды зарегистрированы на сервере ${guildId}`);
-    return;
+async function registerCommands(client) {
+  for (const guild of client.guilds.cache.values()) {
+    await registerGuildCommands(guild.id);
+    console.log(`Команды зарегистрированы на сервере ${guild.id}`);
   }
-
-  await rest.put(Routes.applicationCommands(clientId), { body: [setupCommand] });
-  console.log("Глобальные команды зарегистрированы");
 }
 
 async function handleSetup(interaction) {
@@ -84,7 +82,7 @@ async function handleSetup(interaction) {
 client.once(Events.ClientReady, async (readyClient) => {
   console.log(`Бот запущен как ${readyClient.user.tag}`);
   try {
-    await registerCommands();
+    await registerCommands(readyClient);
   } catch (error) {
     console.error("Не удалось зарегистрировать команды:", error);
   }
@@ -94,6 +92,12 @@ client.once(Events.ClientReady, async (readyClient) => {
   } catch (error) {
     console.error("Не удалось восстановить привязки ролей:", error);
   }
+});
+
+client.on(Events.GuildCreate, (guild) => {
+  registerGuildCommands(guild.id)
+    .then(() => console.log(`Команды зарегистрированы на сервере ${guild.id}`))
+    .catch((error) => console.error(`Не удалось зарегистрировать команды на ${guild.id}:`, error));
 });
 
 client.on(Events.GuildMemberAdd, (member) => {
