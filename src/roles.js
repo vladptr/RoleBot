@@ -37,9 +37,8 @@ export function panelPayload() {
     .setTitle("Персональная роль")
     .setDescription(
       [
-        "Нажми кнопку ниже, чтобы **создать свою роль** на сервере.",
-        "Повторное нажатие откроет меню — его увидишь **только ты**.",
-        "Можно изменить название, эмодзи по краям и цвет. Права роли менять нельзя.",
+        "Нажми кнопку ниже, чтобы создать свою роль на сервере.",
+        "Повторное нажатие откроет меню изменения названия и цвета.",
       ].join("\n"),
     );
 
@@ -338,14 +337,7 @@ function manageEmbed(role) {
   return new EmbedBuilder()
     .setColor(hex || 0x99aab5)
     .setTitle("Управление ролью")
-    .setDescription(
-      [
-        `Название: **${visibleName(role.name)}**`,
-        `Цвет: **${colorName(hex)}**`,
-        "",
-        "Эти кнопки видишь только ты. Название, эмодзи по краям и цвет выбираются здесь.",
-      ].join("\n"),
-    );
+    .setDescription(`Название: **${visibleName(role.name)}**\nЦвет: **${colorName(hex)}**`);
 }
 
 function managePayload(role) {
