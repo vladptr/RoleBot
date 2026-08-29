@@ -20,9 +20,14 @@ export const IDS = {
   COLOR: "role:color",
   RENAME_MODAL: "role:rename:modal",
   NAME_INPUT: "role:name",
+  EMOJI_LEFT: "role:emoji:left",
+  EMOJI_RIGHT: "role:emoji:right",
 };
 
 const NAME_MAX = 100;
+const EMOJI_MAX = 16;
+const EMOJI_CHARS =
+  /\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Emoji_Modifier}|\p{Emoji_Modifier_Base}|\p{Emoji_Component}|\p{Regional_Indicator}|\uFE0F|\u200D|\u20E3/gu;
 
 export function panelPayload() {
   const embed = new EmbedBuilder()
@@ -31,9 +36,8 @@ export function panelPayload() {
     .setDescription(
       [
         "Нажми кнопку ниже, чтобы **создать свою роль** на сервере.",
-        "Повторное нажатие откроет меню изменения названия и цвета — его увидишь **только ты**.",
-        "",
-        "Менять можно только название и цвет. Права роли изменить нельзя.",
+        "Повторное нажатие откроет меню — его увидишь **только ты**.",
+        "Можно изменить название, эмодзи по краям и цвет. Права роли менять нельзя.",
       ].join("\n"),
     );
 
@@ -57,6 +61,73 @@ function sanitizeName(raw) {
     .slice(0, NAME_MAX);
 
   return name;
+}
+
+function isEmojiToken(token) {
+  if (!token) return false;
+  if (token.replace(EMOJI_CHARS, "").length !== 0) return false;
+
+  return (
+    /\p{Extended_Pictographic}|\p{Emoji_Presentation}/u.test(token) ||
+    /[\u{1F1E6}-\u{1F1FF}]{2}/u.test(token) ||
+    token.includes("\u20E3")
+  );
+}
+
+function sanitizeEmoji(raw) {
+  let value = String(raw ?? "").trim();
+  if (!value) return { value: "" };
+
+  if (value.startsWith("(") && value.endsWith(")") && value.length > 2) {
+    value = value.slice(1, -1).trim();
+  }
+
+  value = value.replace(/\s+/g, "");
+  if (!value) return { value: "" };
+
+  if (value.length > EMOJI_MAX) {
+    return { error: "Эмодзи слишком длинное. Вставь один эмодзи, например 🥇." };
+  }
+
+  if (/@everyone|@here|https?:\/\//i.test(value)) {
+    return { error: "В поле эмодзи нельзя вставлять ссылки или упоминания." };
+  }
+
+  if (!isEmojiToken(value)) {
+    return { error: "В поля по краям вставь только эмодзи, например 🥇. Обычный текст туда нельзя." };
+  }
+
+  return { value };
+}
+
+function parseRoleName(fullName) {
+  const tokens = String(fullName ?? "").trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return { left: "", name: "", right: "" };
+
+  let start = 0;
+  let end = tokens.length;
+  let left = "";
+  let right = "";
+
+  if (tokens.length >= 2 && isEmojiToken(tokens[0])) {
+    left = tokens[0];
+    start = 1;
+  }
+
+  if (end - start >= 2 && isEmojiToken(tokens[end - 1])) {
+    right = tokens[end - 1];
+    end -= 1;
+  }
+
+  return {
+    left,
+    name: tokens.slice(start, end).join(" "),
+    right,
+  };
+}
+
+function buildRoleName(left, name, right) {
+  return [left, name, right].filter(Boolean).join(" ").slice(0, NAME_MAX);
 }
 
 function ephemeral(payload) {
@@ -121,7 +192,7 @@ function manageComponents(role) {
   const renameRow = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(IDS.RENAME)
-      .setLabel("Изменить название")
+      .setLabel("Название и эмодзи")
       .setStyle(ButtonStyle.Secondary)
       .setEmoji("✏️"),
   );
@@ -155,7 +226,7 @@ function manageEmbed(role) {
         `Название: **${role.name}**`,
         `Цвет: **${colorName(hex)}**`,
         "",
-        "Эти кнопки видишь только ты. Можно изменить только название и цвет.",
+        "Эти кнопки видишь только ты. Можно изменить название, эмодзи по краям и цвет.",
       ].join("\n"),
     );
 }
@@ -245,21 +316,48 @@ export async function handleRenameButton(interaction) {
     return;
   }
 
+  const parsed = parseRoleName(role.name);
+  const nameValue = (parsed.name || role.name).slice(0, NAME_MAX);
+
   const modal = new ModalBuilder()
     .setCustomId(IDS.RENAME_MODAL)
-    .setTitle("Название роли");
+    .setTitle("Название и эмодзи");
 
-  const input = new TextInputBuilder()
+  const leftInput = new TextInputBuilder()
+    .setCustomId(IDS.EMOJI_LEFT)
+    .setLabel("Эмодзи слева")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setMaxLength(EMOJI_MAX)
+    .setPlaceholder("🥇  или оставь пустым");
+
+  if (parsed.left) leftInput.setValue(parsed.left);
+
+  const nameInput = new TextInputBuilder()
     .setCustomId(IDS.NAME_INPUT)
-    .setLabel("Новое название")
+    .setLabel("Название роли")
     .setStyle(TextInputStyle.Short)
     .setMinLength(1)
     .setMaxLength(NAME_MAX)
     .setRequired(true)
-    .setValue(role.name.slice(0, NAME_MAX))
+    .setValue(nameValue)
     .setPlaceholder("Как будет называться роль");
 
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  const rightInput = new TextInputBuilder()
+    .setCustomId(IDS.EMOJI_RIGHT)
+    .setLabel("Эмодзи справа")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(false)
+    .setMaxLength(EMOJI_MAX)
+    .setPlaceholder("🥇  или оставь пустым");
+
+  if (parsed.right) rightInput.setValue(parsed.right);
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(leftInput),
+    new ActionRowBuilder().addComponents(nameInput),
+    new ActionRowBuilder().addComponents(rightInput),
+  );
   await interaction.showModal(modal);
 }
 
@@ -286,13 +384,31 @@ export async function handleRenameModal(interaction) {
     return;
   }
 
+  const left = sanitizeEmoji(interaction.fields.getTextInputValue(IDS.EMOJI_LEFT));
+  if (left.error) {
+    await interaction.editReply({ content: left.error });
+    return;
+  }
+
+  const right = sanitizeEmoji(interaction.fields.getTextInputValue(IDS.EMOJI_RIGHT));
+  if (right.error) {
+    await interaction.editReply({ content: right.error });
+    return;
+  }
+
+  const fullName = buildRoleName(left.value, name, right.value);
+  if (!fullName) {
+    await interaction.editReply({ content: "Название не может быть пустым." });
+    return;
+  }
+
   try {
     const updated = await role.setName(
-      name,
+      fullName,
       `Смена названия персональной роли ${interaction.user.tag}`,
     );
     await interaction.editReply({
-      content: `Название роли изменено на **${name}**.`,
+      content: `Название роли изменено на **${fullName}**.`,
       ...managePayload(updated),
     });
   } catch (error) {
