@@ -287,8 +287,10 @@ export async function handleRenameModal(interaction) {
   }
 
   try {
-    await role.setName(name, `Смена названия персональной роли ${interaction.user.tag}`);
-    const updated = await role.fetch();
+    const updated = await role.setName(
+      name,
+      `Смена названия персональной роли ${interaction.user.tag}`,
+    );
     await interaction.editReply({
       content: `Название роли изменено на **${name}**.`,
       ...managePayload(updated),
@@ -327,12 +329,11 @@ export async function handleColorSelect(interaction) {
   }
 
   try {
-    await applyRoleColor(
+    const updated = await applyRoleColor(
       role,
       selected.hex,
       `Смена цвета персональной роли ${interaction.user.tag}`,
     );
-    const updated = await role.fetch();
     await interaction.editReply(managePayload(updated));
   } catch (error) {
     console.error("Failed to recolor role:", error);
