@@ -14,7 +14,7 @@ import {
 } from "discord.js";
 import { COLORS, colorName, findColor } from "./colors.js";
 import { ROLE_EMOJIS, findRoleEmoji } from "./emojis.js";
-import { applyOwnerMark, decodeOwner, visibleName } from "./ownerMark.js";
+import { applyOwnerMark, decodeOwner, ownedBy, visibleName } from "./ownerMark.js";
 import * as store from "./store.js";
 
 export const IDS = {
@@ -132,40 +132,13 @@ async function setOwnedName(role, name, userId, reason) {
   }
 }
 
-function isPersonalCandidate(role) {
-  if (!role || role.managed) return false;
-  if (role.id === role.guild.id) return false;
-  if (!role.editable) return false;
-  return role.permissions.bitfield === 0n;
-}
-
 async function recoverPersonalRole(member) {
   await member.guild.roles.fetch().catch(() => null);
 
   for (const role of member.guild.roles.cache.values()) {
-    if (decodeOwner(role.name) === member.id) {
-      return role;
-    }
+    if (ownedBy(role.name, member.id)) return role;
   }
 
-  await member.guild.members.fetch().catch(() => null);
-
-  const unique = [];
-  for (const role of member.roles.cache.values()) {
-    if (!isPersonalCandidate(role)) continue;
-    if (decodeOwner(role.name) && decodeOwner(role.name) !== member.id) continue;
-    if (role.members.size === 1 && role.members.has(member.id)) {
-      unique.push(role);
-    }
-  }
-
-  if (unique.length > 0) {
-    unique.sort((a, b) => (BigInt(b.id) > BigInt(a.id) ? 1 : -1));
-    return unique[0];
-  }
-
-  const local = [...member.roles.cache.values()].filter(isPersonalCandidate);
-  if (local.length === 1) return local[0];
   return null;
 }
 
@@ -174,7 +147,7 @@ async function fetchOwnedRole(guild, userId, member = null) {
   if (storedId) {
     const role =
       guild.roles.cache.get(storedId) ?? (await guild.roles.fetch(storedId).catch(() => null));
-    if (role) return role;
+    if (role && ownedBy(role.name, userId)) return role;
     store.deleteRoleId(guild.id, userId);
   }
 
@@ -185,11 +158,6 @@ async function fetchOwnedRole(guild, userId, member = null) {
   if (!recovered) return null;
 
   store.setRoleId(guild.id, userId, recovered.id);
-  if (!decodeOwner(recovered.name)) {
-    await setOwnedName(recovered, visibleName(recovered.name), userId, "Пометка персональной роли").catch(
-      () => null,
-    );
-  }
   return recovered;
 }
 
@@ -204,17 +172,6 @@ export async function rebuildOwnership(client) {
         if (ownerId) store.setRoleId(guild.id, ownerId, role.id);
       }
 
-      const newestFirst = [...guild.roles.cache.values()].sort((a, b) =>
-        BigInt(b.id) > BigInt(a.id) ? 1 : -1,
-      );
-
-      for (const role of newestFirst) {
-        if (!isPersonalCandidate(role) || role.members.size !== 1) continue;
-        const ownerId = role.members.first()?.id;
-        if (!ownerId || store.getRoleId(guild.id, ownerId)) continue;
-        store.setRoleId(guild.id, ownerId, role.id);
-      }
-
       const logs = await guild
         .fetchAuditLogs({ type: AuditLogEvent.RoleCreate, limit: 100 })
         .catch(() => null);
@@ -224,9 +181,14 @@ export async function rebuildOwnership(client) {
         if ((entry.executorId ?? entry.executor?.id) !== client.user.id) continue;
         const matched = /\((\d{17,20})\)\s*$/.exec(entry.reason ?? "");
         const roleId = entry.targetId ?? entry.target?.id;
-        if (!matched || !roleId || !guild.roles.cache.has(roleId)) continue;
-        if (!store.getRoleId(guild.id, matched[1])) {
-          store.setRoleId(guild.id, matched[1], roleId);
+        if (!matched || !roleId) continue;
+        const role = guild.roles.cache.get(roleId);
+        if (!role) continue;
+        store.setRoleId(guild.id, matched[1], roleId);
+        if (!ownedBy(role.name, matched[1])) {
+          await setOwnedName(role, visibleName(role.name), matched[1], "Пометка персональной роли").catch(
+            () => null,
+          );
         }
       }
     } catch (error) {

@@ -19,6 +19,10 @@ export function decodeOwner(name) {
   return /^\d{17,20}$/.test(decoded) ? decoded : null;
 }
 
+export function ownedBy(name, userId) {
+  return decodeOwner(name) === userId;
+}
+
 export function applyOwnerMark(name, userId) {
   const stamp = [...String(userId)].map((digit) => String.fromCodePoint(TAG_BASE + digit.charCodeAt(0))).join("");
   return visibleName(name).slice(0, 100 - stamp.length) + stamp;
