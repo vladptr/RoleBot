@@ -259,6 +259,22 @@ function botCanManage(guild, role) {
   return null;
 }
 
+async function raisePersonalRole(role) {
+  if (isBlockedRole(role)) return role;
+  const me = role.guild.members.me;
+  if (!me) return role;
+
+  const target = Math.max(1, me.roles.highest.position - 1);
+  if (role.position >= target) return role;
+
+  try {
+    return await role.setPosition(target, { reason: "Цвет персональной роли в списке участников" });
+  } catch (error) {
+    console.error("Failed to raise personal role:", error);
+    return role;
+  }
+}
+
 function emojiSelectRow(customId, placeholder, current) {
   const options = [
     new StringSelectMenuOptionBuilder()
@@ -376,6 +392,7 @@ async function createPersonalRole(member) {
     }
 
     await member.roles.add(role, "Выдача персональной роли");
+    role = await raisePersonalRole(role);
     store.setRoleId(guild.id, member.id, role.id);
     return { role };
   } catch (error) {
@@ -392,7 +409,7 @@ export async function handlePanelClick(interaction) {
 
   const member = interaction.member;
   const guild = interaction.guild;
-  const role = await fetchOwnedRole(guild, member.id, member);
+  let role = await fetchOwnedRole(guild, member.id, member);
 
   if (!role) {
     const created = await createPersonalRole(member);
@@ -418,6 +435,7 @@ export async function handlePanelClick(interaction) {
     return;
   }
 
+  role = await raisePersonalRole(role);
   await interaction.editReply(managePayload(role));
 }
 
