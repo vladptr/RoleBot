@@ -14,3 +14,5 @@ services:
         sync: false
       - key: DATA_DIR
         value: ./data
+      - key: VOICE_HUB_CHANNEL_ID
+        value: "1543696647953846345"

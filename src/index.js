@@ -9,6 +9,13 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 import { keepAlive } from "./keepAlive.js";
+import {
+  handleVoiceKick,
+  handleVoiceStateUpdate,
+  recoverVoiceRooms,
+  forgetVoiceChannel,
+  VOICE_KICK,
+} from "./voiceRooms.js";
 import * as store from "./store.js";
 import {
   handleColorSelect,
@@ -31,7 +38,11 @@ if (!token || !clientId) {
 }
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates,
+  ],
 });
 
 const setupCommand = new SlashCommandBuilder()
@@ -92,12 +103,27 @@ client.once(Events.ClientReady, async (readyClient) => {
   } catch (error) {
     console.error("Не удалось восстановить привязки ролей:", error);
   }
+  try {
+    await recoverVoiceRooms(readyClient);
+  } catch (error) {
+    console.error("Не удалось восстановить голосовые комнаты:", error);
+  }
 });
 
 client.on(Events.GuildCreate, (guild) => {
   registerGuildCommands(guild.id)
     .then(() => console.log(`Команды зарегистрированы на сервере ${guild.id}`))
     .catch((error) => console.error(`Не удалось зарегистрировать команды на ${guild.id}:`, error));
+});
+
+client.on(Events.VoiceStateUpdate, (oldState, newState) => {
+  handleVoiceStateUpdate(oldState, newState).catch((error) => {
+    console.error("Voice state error:", error);
+  });
+});
+
+client.on(Events.ChannelDelete, (channel) => {
+  forgetVoiceChannel(channel.id);
 });
 
 client.on(Events.GuildMemberAdd, (member) => {
@@ -135,6 +161,11 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
     if (interaction.isStringSelectMenu() && interaction.customId === IDS.COLOR) {
       await handleColorSelect(interaction);
+      return;
+    }
+
+    if (interaction.isUserSelectMenu() && interaction.customId === VOICE_KICK) {
+      await handleVoiceKick(interaction);
       return;
     }
 
