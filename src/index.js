@@ -164,7 +164,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    if (interaction.isUserSelectMenu() && interaction.customId === VOICE_KICK) {
+    if (interaction.isStringSelectMenu() && interaction.customId === VOICE_KICK) {
       await handleVoiceKick(interaction);
       return;
     }

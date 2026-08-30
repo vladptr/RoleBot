@@ -3,7 +3,8 @@ import {
   ChannelType,
   EmbedBuilder,
   MessageFlags,
-  UserSelectMenuBuilder,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
 } from "discord.js";
 
 export const VOICE_KICK = "voice:kick";
@@ -43,25 +44,42 @@ function roomsInGuild(guildId) {
   return [...rooms.values()].filter((room) => room.guildId === guildId);
 }
 
-function panelPayload(room) {
+function panelPayload(channel, room) {
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
     .setTitle(`Управление комнатой №${room.number}`)
     .setDescription(`Владелец: <@${room.ownerId}>\nВыбери, кого выгнать из голосового канала.`);
 
+  const kickable = humansIn(channel).filter((member) => member.id !== room.ownerId);
+  const options =
+    kickable.size === 0
+      ? [
+          new StringSelectMenuOptionBuilder()
+            .setLabel("Некого выгнать")
+            .setValue("none")
+            .setDescription("В комнате никого кроме владельца"),
+        ]
+      : [...kickable.values()].slice(0, 25).map((member) =>
+          new StringSelectMenuOptionBuilder()
+            .setLabel(member.displayName.slice(0, 100))
+            .setValue(member.id)
+            .setDescription(member.user.username.slice(0, 100)),
+        );
+
   const row = new ActionRowBuilder().addComponents(
-    new UserSelectMenuBuilder()
+    new StringSelectMenuBuilder()
       .setCustomId(VOICE_KICK)
       .setPlaceholder("Кого выгнать")
       .setMinValues(1)
-      .setMaxValues(1),
+      .setMaxValues(1)
+      .addOptions(options),
   );
 
   return { embeds: [embed], components: [row] };
 }
 
 async function refreshPanel(channel, room) {
-  const payload = panelPayload(room);
+  const payload = panelPayload(channel, room);
   if (room.panelId) {
     const existing = await channel.messages.fetch(room.panelId).catch(() => null);
     if (existing) {
@@ -245,6 +263,13 @@ export async function handleVoiceKick(interaction) {
   }
 
   const targetId = interaction.values[0];
+  if (targetId === "none") {
+    await interaction.reply({
+      content: "В комнате сейчас некого выгонять.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
   if (targetId === room.ownerId) {
     await interaction.reply({
       content: "Себя выгнать нельзя.",
