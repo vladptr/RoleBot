@@ -28,6 +28,16 @@ export const IDS = {
 };
 
 const NAME_MAX = 100;
+const BLOCKED_ROLE_IDS = new Set([
+  "1542047602739118130",
+  "1542219560504266804",
+  "1542221838581768302",
+  "1543683491240353832",
+  "1543683565907222538",
+  "1543683698279325786",
+  "1543702752495018044",
+  ...(process.env.ROLE_DENYLIST ?? "").split(/[,\s]+/).filter(Boolean),
+]);
 const EMOJI_CHARS =
   /\p{Extended_Pictographic}|\p{Emoji_Presentation}|\p{Emoji_Modifier}|\p{Emoji_Modifier_Base}|\p{Emoji_Component}|\p{Regional_Indicator}|\uFE0F|\u200D|\u20E3/gu;
 
@@ -132,11 +142,25 @@ async function setOwnedName(role, name, userId, reason) {
   }
 }
 
+function isBlockedRole(role) {
+  if (!role) return true;
+  if (role.id === role.guild.id) return true;
+  if (role.managed) return true;
+  return BLOCKED_ROLE_IDS.has(role.id);
+}
+
+function isPersonalRole(role, userId) {
+  if (isBlockedRole(role)) return false;
+  if (role.members.size > 1) return false;
+  return ownedBy(role.name, userId);
+}
+
 async function recoverPersonalRole(member) {
   await member.guild.roles.fetch().catch(() => null);
+  await member.guild.members.fetch().catch(() => null);
 
-  for (const role of member.guild.roles.cache.values()) {
-    if (ownedBy(role.name, member.id)) return role;
+  for (const role of member.roles.cache.values()) {
+    if (isPersonalRole(role, member.id)) return role;
   }
 
   return null;
@@ -147,7 +171,7 @@ async function fetchOwnedRole(guild, userId, member = null) {
   if (storedId) {
     const role =
       guild.roles.cache.get(storedId) ?? (await guild.roles.fetch(storedId).catch(() => null));
-    if (role && ownedBy(role.name, userId)) return role;
+    if (role && isPersonalRole(role, userId)) return role;
     store.deleteRoleId(guild.id, userId);
   }
 
@@ -161,6 +185,11 @@ async function fetchOwnedRole(guild, userId, member = null) {
   return recovered;
 }
 
+async function unmarkIfNeeded(role) {
+  if (!decodeOwner(role.name)) return;
+  await role.setName(visibleName(role.name).slice(0, NAME_MAX), "Снять пометку персональной роли").catch(() => null);
+}
+
 export async function rebuildOwnership(client) {
   for (const guild of client.guilds.cache.values()) {
     try {
@@ -168,6 +197,10 @@ export async function rebuildOwnership(client) {
       await guild.members.fetch().catch(() => null);
 
       for (const role of guild.roles.cache.values()) {
+        if (isBlockedRole(role) || role.members.size > 1) {
+          await unmarkIfNeeded(role);
+          continue;
+        }
         const ownerId = decodeOwner(role.name);
         if (ownerId) store.setRoleId(guild.id, ownerId, role.id);
       }
@@ -183,7 +216,7 @@ export async function rebuildOwnership(client) {
         const roleId = entry.targetId ?? entry.target?.id;
         if (!matched || !roleId) continue;
         const role = guild.roles.cache.get(roleId);
-        if (!role) continue;
+        if (!role || isBlockedRole(role) || role.members.size > 1) continue;
         store.setRoleId(guild.id, matched[1], roleId);
         if (!ownedBy(role.name, matched[1])) {
           await setOwnedName(role, visibleName(role.name), matched[1], "Пометка персональной роли").catch(
